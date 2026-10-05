@@ -3,7 +3,7 @@
 FastAPI microservice that builds payloads from two lists of strings and caches
 the results of a slow "transformer" so each distinct string is transformed once.
 
-* `POST /payload` with `{"list_1": [...], "list_2": [...]}` (equal length) → `201 {"id": "<uuid>"}`
+* `POST /payload` with `{"list_1": [...], "list_2": [...]}` (equal length) → `201 {"id": "<uuid>"}` for a new payload, `200` with the same id if an identical one already exists
 * `GET /payload/{id}` → `{"output": "..."}` (`404` if unknown)
 
 The transformer (`transformer.py`) upper-cases a string after a simulated delay.
