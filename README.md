@@ -58,12 +58,14 @@ The task lists `-h` for both host and help; argparse cannot allow that, so the h
 ## Tests
 
 ```sh
-uv run pytest
+uv run pytest        # needs Docker
 ```
+
+Tests run against a throwaway PostgreSQL started with testcontainers, with the schema built
+by the real Alembic migrations, so the SQL and the migrations are exercised as in production.
 
 ## Known shortcuts
 
-* Tests run on in-memory SQLite for speed; the models use only portable types.
 * Sharing of in-flight transformer calls works per process. With several replicas, the same
   string may be transformed once per replica at most at the same moment; the database still
   keeps a single row and a single payload id.

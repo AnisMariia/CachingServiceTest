@@ -1,17 +1,30 @@
 import asyncio
+import os
 from collections.abc import AsyncIterator, Iterator
+
+from pathlib import Path
 
 import httpx
 import pytest
+from alembic import command
+from alembic.config import Config
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.pool import NullPool
+from testcontainers.community.postgres import PostgresContainer
 
 from caching_service.app import app
+from caching_service.config import get_settings
 from caching_service.database import get_session
-from caching_service.models import Base
 from caching_service.routers import get_pool
 from caching_service.transformer import TransformerPool
+
+ROOT = Path(__file__).resolve().parent.parent
+
+# The reaper container needs docker.sock mounted, which Docker Desktop on macOS refuses;
+# the `with` block below stops the database container anyway.
+os.environ.setdefault("TESTCONTAINERS_RYUK_DISABLED", "true")
 
 
 class CountingTransformer:
@@ -37,20 +50,26 @@ class CountingTransformer:
             self.running -= 1
 
 
+@pytest.fixture(scope="session")
+def database_url() -> Iterator[str]:
+    """A throwaway PostgreSQL with the schema built by the real migrations."""
+    with PostgresContainer("postgres:17", driver="psycopg") as postgres:
+        url = postgres.get_connection_url()
+        # Alembic's env.py reads the URL from the settings, like the application.
+        os.environ["DATABASE_URL"] = url
+        get_settings.cache_clear()
+        command.upgrade(Config(str(ROOT / "alembic.ini")), "head")
+        yield url
+
+
 @pytest.fixture
-def engine() -> AsyncEngine:
-    # In-memory SQLite keeps tests fast and dependency-free; the models use only
-    # portable types, so they behave the same on PostgreSQL.
-    engine = create_async_engine(
-        "sqlite+aiosqlite://", poolclass=StaticPool, connect_args={"check_same_thread": False}
-    )
-
-    async def create_tables() -> None:
-        async with engine.begin() as connection:
-            await connection.run_sync(Base.metadata.create_all)
-
-    asyncio.run(create_tables())
-    return engine
+async def engine(database_url) -> AsyncIterator[AsyncEngine]:
+    # NullPool: connections must not outlive the event loop of the test that made them.
+    engine = create_async_engine(database_url, poolclass=NullPool)
+    yield engine
+    async with engine.begin() as connection:
+        await connection.execute(text("TRUNCATE payloads, cached_transformations"))
+    await engine.dispose()
 
 
 @pytest.fixture

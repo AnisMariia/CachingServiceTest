@@ -22,9 +22,9 @@ cache-cli = "caching_service.cli:main"
 
 [dependency-groups]
 dev = [
-    "aiosqlite>=0.22.1",
     "pytest>=8",
     "pytest-asyncio>=1.4.0",
+    "testcontainers[postgres]>=4.15.0",
 ]
 
 [build-system]

@@ -6,7 +6,7 @@ import uuid
 from itertools import chain
 
 from sqlalchemy import select
-from sqlalchemy.dialects import postgresql, sqlite
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from caching_service.models import Base, CachedTransformation, Payload
@@ -29,9 +29,7 @@ async def _insert_ignoring_duplicates(
     """Insert rows, skipping those another request has stored in the meantime."""
     if not rows:
         return
-    # ON CONFLICT DO NOTHING is the only race-free way to do this; SQLite (used in
-    # tests) has its own spelling of it.
-    insert = sqlite.insert if session.bind.dialect.name == "sqlite" else postgresql.insert
+    # ON CONFLICT DO NOTHING is the only race-free way to do this.
     await session.execute(insert(model).values(rows).on_conflict_do_nothing())
 
 
