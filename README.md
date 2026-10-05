@@ -17,6 +17,18 @@ The output is the transformed strings interleaved and joined with `", "`.
 * `payloads` stores the finished output with a unique hash of it, so an identical
   payload always gets the same id, and `GET` never touches the transformer.
 
+## Concurrency
+
+The service is fully async (async endpoints, SQLAlchemy `AsyncSession`, async transformer).
+
+* **No duplicate calls:** concurrent requests that need the same uncached string share a
+  single transformer call (`TransformerPool`). That call is shielded from cancellation, so a
+  client disconnecting does not fail the other requests waiting on it.
+* **Bounded load:** `TRANSFORMER_CONCURRENCY` (default 10) caps simultaneous transformer calls.
+* **No idle connections:** the DB connection is released before the slow transformer calls.
+* **Race-free writes:** rows are inserted with `ON CONFLICT DO NOTHING`, and the payload id is
+  read back, so concurrent identical requests always agree on one id and one row.
+
 ## Run
 
 ```sh
@@ -52,5 +64,7 @@ uv run pytest
 ## Known shortcuts
 
 * Tests run on in-memory SQLite for speed; the models use only portable types.
-* A request that races an identical one may redo some transformer calls, but never
-  stores duplicates or returns a different id.
+* Sharing of in-flight transformer calls works per process. With several replicas, the same
+  string may be transformed once per replica at most at the same moment; the database still
+  keeps a single row and a single payload id.
+* The CLI stays synchronous: it is a sequential test tool, so async would add nothing.

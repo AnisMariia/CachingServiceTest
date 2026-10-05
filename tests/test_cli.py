@@ -3,18 +3,17 @@ import sys
 
 import pytest
 
-from caching_service import cli, transformer
+from caching_service import cli
 
 BODY = {"list_1": ["a"], "list_2": ["b"]}
 
 
 @pytest.fixture
-def run_cli(client, monkeypatch, capsys):
+def run_cli(sync_client, monkeypatch, capsys):
     # Route the CLI's HTTP calls into the in-process app instead of a real server.
     monkeypatch.setattr(
-        cli.httpx, "Client", lambda base_url, timeout: client
+        cli.httpx, "Client", lambda base_url, timeout: sync_client
     )
-    monkeypatch.setattr(transformer, "LATENCY_SECONDS", 0)
 
     def run(*args: str):
         monkeypatch.setattr(sys, "argv", ["cache-cli", *args])

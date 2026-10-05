@@ -1,16 +1,16 @@
 """Payload generation with cached transformer results."""
 
+import asyncio
 import hashlib
 import uuid
-from collections.abc import Callable, Iterable
 from itertools import chain
 
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.dialects import postgresql, sqlite
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from caching_service.models import CachedTransformation, Payload
-from caching_service.transformer import transform
+from caching_service.models import Base, CachedTransformation, Payload
+from caching_service.transformer import TransformerPool
 
 OUTPUT_SEPARATOR = ", "
 
@@ -23,66 +23,65 @@ def interleave(list_1: list[str], list_2: list[str]) -> list[str]:
     return list(chain.from_iterable(zip(list_1, list_2, strict=True)))
 
 
-def _transform_all(
-    session: Session, sources: Iterable[str], transformer: Callable[[str], str]
+async def _insert_ignoring_duplicates(
+    session: AsyncSession, model: type[Base], rows: list[dict[str, object]]
+) -> None:
+    """Insert rows, skipping those another request has stored in the meantime."""
+    if not rows:
+        return
+    # ON CONFLICT DO NOTHING is the only race-free way to do this; SQLite (used in
+    # tests) has its own spelling of it.
+    insert = sqlite.insert if session.bind.dialect.name == "sqlite" else postgresql.insert
+    await session.execute(insert(model).values(rows).on_conflict_do_nothing())
+
+
+async def _transform_all(
+    session: AsyncSession, sources: list[str], pool: TransformerPool
 ) -> dict[str, str]:
     """Return source -> transformed, calling the transformer once per string not yet cached."""
-    unique = set(sources)
-    hashes = {source: sha256_hex(source) for source in unique}
+    hashes = {source: sha256_hex(source) for source in set(sources)}
 
-    rows = session.scalars(
+    rows = await session.scalars(
         select(CachedTransformation).where(CachedTransformation.source_hash.in_(hashes.values()))
     )
-    cached = {row.source: row.transformed for row in rows}
+    result = {row.source: row.transformed for row in rows}
 
-    for source in unique - cached.keys():
-        cached[source] = transformer(source)
-        session.add(
-            CachedTransformation(
-                source_hash=hashes[source], source=source, transformed=cached[source]
-            )
-        )
-    return cached
+    # Release the connection before the slow external calls: holding it for their
+    # whole duration would exhaust the pool under load while it sits idle.
+    await session.rollback()
+
+    missing = list(hashes.keys() - result.keys())
+    transformed = await asyncio.gather(*(pool.transform(source) for source in missing))
+    result.update(zip(missing, transformed, strict=True))
+
+    await _insert_ignoring_duplicates(
+        session,
+        CachedTransformation,
+        [
+            {"source_hash": hashes[source], "source": source, "transformed": text}
+            for source, text in zip(missing, transformed, strict=True)
+        ],
+    )
+    return result
 
 
-def create_payload(
-    session: Session,
-    list_1: list[str],
-    list_2: list[str],
-    transformer: Callable[[str], str] = transform,
+async def create_payload(
+    session: AsyncSession, list_1: list[str], list_2: list[str], pool: TransformerPool
 ) -> uuid.UUID:
     """Store the payload for the two lists and return its id; identical payloads share one id."""
     interleaved = interleave(list_1, list_2)
-    transformed = _transform_all(session, interleaved, transformer)
+    transformed = await _transform_all(session, interleaved, pool)
     output = OUTPUT_SEPARATOR.join(transformed[source] for source in interleaved)
     fingerprint = sha256_hex(output)
 
-    existing = session.scalar(select(Payload.id).where(Payload.fingerprint == fingerprint))
-    if existing is not None:
-        session.commit()  # still persist any newly cached transformations
-        return existing
-
-    payload = Payload(fingerprint=fingerprint, output=output)
-    try:
-        session.add(payload)
-        session.commit()
-    except IntegrityError:
-        # A concurrent request stored the same payload or cache entry first. Their
-        # cache rows are equivalent to ours, so retry once without re-adding them.
-        session.rollback()
-        return _find_or_create_payload(session, fingerprint, output)
-    return payload.id
+    await _insert_ignoring_duplicates(
+        session, Payload, [{"id": uuid.uuid4(), "fingerprint": fingerprint, "output": output}]
+    )
+    # Our row may have lost the race to an identical one, so read the id back.
+    payload_id = await session.scalar(select(Payload.id).where(Payload.fingerprint == fingerprint))
+    await session.commit()
+    return payload_id
 
 
-def _find_or_create_payload(session: Session, fingerprint: str, output: str) -> uuid.UUID:
-    existing = session.scalar(select(Payload.id).where(Payload.fingerprint == fingerprint))
-    if existing is not None:
-        return existing
-    payload = Payload(fingerprint=fingerprint, output=output)
-    session.add(payload)
-    session.commit()
-    return payload.id
-
-
-def get_payload_output(session: Session, payload_id: uuid.UUID) -> str | None:
-    return session.scalar(select(Payload.output).where(Payload.id == payload_id))
+async def get_payload_output(session: AsyncSession, payload_id: uuid.UUID) -> str | None:
+    return await session.scalar(select(Payload.output).where(Payload.id == payload_id))
