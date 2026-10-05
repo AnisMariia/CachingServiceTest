@@ -25,10 +25,12 @@ async def test_sample_roundtrip(client: httpx.AsyncClient) -> None:
 
 
 async def test_repeated_post_returns_same_id(client: httpx.AsyncClient) -> None:
-    first = (await client.post("/payload", json=SAMPLE)).json()
-    second = (await client.post("/payload", json=SAMPLE)).json()
+    first = await client.post("/payload", json=SAMPLE)
+    second = await client.post("/payload", json=SAMPLE)
 
-    assert first == second
+    assert first.status_code == 201
+    assert second.status_code == 200
+    assert first.json() == second.json()
 
 
 async def test_unknown_id_is_404(client: httpx.AsyncClient) -> None:

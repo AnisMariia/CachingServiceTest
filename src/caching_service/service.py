@@ -78,10 +78,13 @@ async def _transform_all(
     return result
 
 
-async def create_payload(
+async def store_payload(
     session: AsyncSession, list_1: list[str], list_2: list[str], pool: TransformerPool
-) -> uuid.UUID:
-    """Store the payload for the two lists and return its id; identical payloads share one id."""
+) -> tuple[uuid.UUID, bool]:
+    """Store the payload for the two lists; return its id and whether this call created it.
+
+    Identical payloads share one id, so a repeat returns the existing id with False.
+    """
     interleaved = interleave(list_1, list_2)
     logger.info("Creating payload from %d string(s)", len(interleaved))
     transformed = await _transform_all(session, interleaved, pool)
@@ -89,16 +92,30 @@ async def create_payload(
     fingerprint = sha256_hex(output)
     logger.debug("Payload fingerprint %s", fingerprint[:8])
 
-    await _insert_ignoring_duplicates(
-        session,
-        Payload,
-        [{"id": uuid.uuid4(), "fingerprint": fingerprint, "output": output}],
+    # RETURNING yields a row only if ours was inserted, i.e. did not lose to an identical one.
+    inserted_id = await session.scalar(
+        insert(Payload)
+        .values(id=uuid.uuid4(), fingerprint=fingerprint, output=output)
+        .on_conflict_do_nothing()
+        .returning(Payload.id)
     )
-    # Our row may have lost the race to an identical one, so read the id back.
-    payload_id = await session.scalar(select(Payload.id).where(Payload.fingerprint == fingerprint))
-    logger.info("Payload stored with id %s", payload_id)
+    created = inserted_id is not None
+    payload_id = inserted_id or await session.scalar(
+        select(Payload.id).where(Payload.fingerprint == fingerprint)
+    )
+    logger.info(
+        "Payload %s with id %s", "created" if created else "already existed", payload_id
+    )
     assert payload_id is not None  # the row exists: we inserted it or lost the race
     await session.commit()
+    return payload_id, created
+
+
+async def create_payload(
+    session: AsyncSession, list_1: list[str], list_2: list[str], pool: TransformerPool
+) -> uuid.UUID:
+    """Like store_payload, for callers that only need the id."""
+    payload_id, _ = await store_payload(session, list_1, list_2, pool)
     return payload_id
 
 

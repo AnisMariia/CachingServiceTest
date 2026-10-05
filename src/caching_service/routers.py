@@ -4,7 +4,7 @@ import uuid
 from functools import lru_cache
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from caching_service import service
@@ -29,11 +29,12 @@ PoolDep = Annotated[TransformerPool, Depends(get_pool)]
 
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_payload(
-    body: PayloadCreate, session: SessionDep, pool: PoolDep
+    body: PayloadCreate, session: SessionDep, pool: PoolDep, response: Response
 ) -> PayloadCreated:
-    return PayloadCreated(
-        id=await service.create_payload(session, body.list_1, body.list_2, pool)
-    )
+    payload_id, created = await service.store_payload(session, body.list_1, body.list_2, pool)
+    if not created:
+        response.status_code = status.HTTP_200_OK
+    return PayloadCreated(id=payload_id)
 
 
 @router.get("/{payload_id}")
