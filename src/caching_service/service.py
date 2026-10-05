@@ -48,7 +48,9 @@ async def _transform_all(
     # whole duration would exhaust the pool under load while it sits idle.
     await session.rollback()
 
-    missing = list(hashes.keys() - result.keys())
+    # Sorted by hash: concurrent requests inserting overlapping rows in different
+    # orders would otherwise wait on each other's row locks and deadlock.
+    missing = sorted(hashes.keys() - result.keys(), key=hashes.__getitem__)
     transformed = await asyncio.gather(*(pool.transform(source) for source in missing))
     result.update(zip(missing, transformed, strict=True))
 
@@ -73,10 +75,13 @@ async def create_payload(
     fingerprint = sha256_hex(output)
 
     await _insert_ignoring_duplicates(
-        session, Payload, [{"id": uuid.uuid4(), "fingerprint": fingerprint, "output": output}]
+        session,
+        Payload,
+        [{"id": uuid.uuid4(), "fingerprint": fingerprint, "output": output}],
     )
     # Our row may have lost the race to an identical one, so read the id back.
     payload_id = await session.scalar(select(Payload.id).where(Payload.fingerprint == fingerprint))
+    assert payload_id is not None  # the row exists: we inserted it or lost the race
     await session.commit()
     return payload_id
 

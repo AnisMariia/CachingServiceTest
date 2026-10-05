@@ -1,7 +1,6 @@
 import asyncio
 import os
 from collections.abc import AsyncIterator, Iterator
-
 from pathlib import Path
 
 import httpx
@@ -10,7 +9,12 @@ from alembic import command
 from alembic.config import Config
 from fastapi.testclient import TestClient
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 from sqlalchemy.pool import NullPool
 from testcontainers.community.postgres import PostgresContainer
 
@@ -63,7 +67,7 @@ def database_url() -> Iterator[str]:
 
 
 @pytest.fixture
-async def engine(database_url) -> AsyncIterator[AsyncEngine]:
+async def engine(database_url: str) -> AsyncIterator[AsyncEngine]:
     # NullPool: connections must not outlive the event loop of the test that made them.
     engine = create_async_engine(database_url, poolclass=NullPool)
     yield engine
@@ -73,7 +77,7 @@ async def engine(database_url) -> AsyncIterator[AsyncEngine]:
 
 
 @pytest.fixture
-async def session(engine) -> AsyncIterator[AsyncSession]:
+async def session(engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
     async with async_sessionmaker(engine, expire_on_commit=False)() as session:
         yield session
 
@@ -84,12 +88,12 @@ def transformer() -> CountingTransformer:
 
 
 @pytest.fixture
-def pool(transformer) -> TransformerPool:
+def pool(transformer: CountingTransformer) -> TransformerPool:
     return TransformerPool(transformer, max_concurrency=10)
 
 
 @pytest.fixture(autouse=True)
-def overrides(engine, pool) -> Iterator[None]:
+def overrides(engine: AsyncEngine, pool: TransformerPool) -> Iterator[None]:
     async def session_override() -> AsyncIterator[AsyncSession]:
         async with async_sessionmaker(engine, expire_on_commit=False)() as session:
             yield session

@@ -27,7 +27,9 @@ The service is fully async (async endpoints, SQLAlchemy `AsyncSession`, async tr
 * **Bounded load:** `TRANSFORMER_CONCURRENCY` (default 10) caps simultaneous transformer calls.
 * **No idle connections:** the DB connection is released before the slow transformer calls.
 * **Race-free writes:** rows are inserted with `ON CONFLICT DO NOTHING`, and the payload id is
-  read back, so concurrent identical requests always agree on one id and one row.
+  read back, so concurrent identical requests always agree on one id and one row. Cache rows
+  are inserted sorted by hash, so overlapping requests lock rows in the same order and cannot
+  deadlock.
 
 ## Run
 
@@ -52,13 +54,34 @@ cat payload.json | uv run cache-cli -i -
 ```
 
 Options: `-H/--host URL`, `-r/--repeat N`, `-i/--input FILE|-`, `-j/--json JSON`,
-`-o/--output FILE|-`, `-h/--help`. Exactly one of `--input`/`--json` is required.
-The task lists `-h` for both host and help; argparse cannot allow that, so the host short flag is `-H`.
+`-o/--output FILE|-`, `-h/--help`.
+
+Assumptions about the CLI spec:
+
+* **`-h` conflict.** The spec lists `-h` for both `--host` and `--help`, which argparse cannot
+  allow. `-h` stays `--help`; the host short flag is `-H`.
+* **Input.** Exactly one of `--input` and `--json` is required (giving both or neither is an
+  error). `--input -` reads stdin. The body has the same shape and limits as the API request.
+* **Host.** Defaults to `http://127.0.0.1:8000`; must start with `http://` or `https://`;
+  a trailing `/` is ignored.
+* **Repeat.** `--repeat N` (N >= 1, default 1) repeats the POST + GET sequentially with the same
+  body, so repeated runs show the cache at work (same id each time).
+* **Output.** A JSON list with one `{"id": ..., "output": ...}` per iteration, written to stdout,
+  or to the file given by `--output` (overwritten if it exists).
+* **Errors.** Invalid arguments or input, unreadable files and HTTP/network failures print one
+  message to stderr and exit non-zero; nothing is written to the output in that case.
+  Requests time out after 30 s.
 
 ## Tests
 
 ```sh
 uv run pytest        # needs Docker
+```
+
+Linting and types (Python 3.12+):
+
+```sh
+uv run ruff check . && uv run ruff format --check . && uv run mypy src tests migrations
 ```
 
 Tests run against a throwaway PostgreSQL started with testcontainers, with the schema built

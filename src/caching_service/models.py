@@ -19,7 +19,9 @@ class CachedTransformation(Base):
 
     # The hash is the key instead of the text itself: PostgreSQL B-tree entries
     # are limited to roughly 2.7 kB, while source strings may be longer.
-    source_hash: Mapped[str] = mapped_column(String(SHA256_HEX_LENGTH), primary_key=True)
+    source_hash: Mapped[str] = mapped_column(
+        String(SHA256_HEX_LENGTH), primary_key=True
+    )
     source: Mapped[str] = mapped_column(Text)
     transformed: Mapped[str] = mapped_column(Text)
 

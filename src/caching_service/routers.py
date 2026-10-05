@@ -28,8 +28,12 @@ PoolDep = Annotated[TransformerPool, Depends(get_pool)]
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
-async def create_payload(body: PayloadCreate, session: SessionDep, pool: PoolDep) -> PayloadCreated:
-    return PayloadCreated(id=await service.create_payload(session, body.list_1, body.list_2, pool))
+async def create_payload(
+    body: PayloadCreate, session: SessionDep, pool: PoolDep
+) -> PayloadCreated:
+    return PayloadCreated(
+        id=await service.create_payload(session, body.list_1, body.list_2, pool)
+    )
 
 
 @router.get("/{payload_id}")

@@ -15,7 +15,10 @@ STDIO = "-"
 
 
 class CliSettings(BaseSettings):
-    """Arguments are parsed and validated by pydantic-settings."""
+    """Send a payload to the caching service and print the stored outputs.
+
+    Arguments are parsed and validated by pydantic-settings.
+    """
 
     # `-h` is taken by --help (argparse), so the short flag for the host is `-H`.
     model_config = SettingsConfigDict(
@@ -77,8 +80,10 @@ class CliSettings(BaseSettings):
             raw = self.json_
         elif self.input == STDIO:
             raw = sys.stdin.read()
-        else:
+        elif self.input is not None:
             raw = Path(self.input).read_text()
+        else:  # unreachable: _check_single_input requires one of the two
+            raise ValueError("no input given")
         return PayloadCreate.model_validate_json(raw)
 
     def cli_cmd(self) -> None:

@@ -11,7 +11,9 @@ MAX_LIST_LENGTH = 1000
 MAX_STRING_LENGTH = 10_000
 
 SourceString = Annotated[str, StringConstraints(max_length=MAX_STRING_LENGTH)]
-SourceList = Annotated[list[SourceString], Field(min_length=1, max_length=MAX_LIST_LENGTH)]
+SourceList = Annotated[
+    list[SourceString], Field(min_length=1, max_length=MAX_LIST_LENGTH)
+]
 
 
 class PayloadCreate(BaseModel):
