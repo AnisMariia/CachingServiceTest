@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import logging
 import uuid
 from itertools import chain
 
@@ -11,6 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from caching_service.models import Base, CachedTransformation, Payload
 from caching_service.transformer import TransformerPool
+
+logger = logging.getLogger(__name__)
 
 OUTPUT_SEPARATOR = ", "
 
@@ -29,6 +32,7 @@ async def _insert_ignoring_duplicates(
     """Insert rows, skipping those another request has stored in the meantime."""
     if not rows:
         return
+    logger.debug("Inserting %d row(s) into %s", len(rows), model.__tablename__)
     # ON CONFLICT DO NOTHING is the only race-free way to do this.
     await session.execute(insert(model).values(rows).on_conflict_do_nothing())
 
@@ -48,9 +52,18 @@ async def _transform_all(
     # whole duration would exhaust the pool under load while it sits idle.
     await session.rollback()
 
+    missing = sorted(hashes.keys() - result.keys(), key=hashes.__getitem__)
+    logger.info(
+        "Cache lookup: %d unique string(s), %d cached (transformer NOT called), %d missing",
+        len(hashes),
+        len(result),
+        len(missing),
+    )
+    for source in result:
+        logger.debug("Cache hit for %s, transformer skipped", hashes[source][:8])
+
     # Sorted by hash: concurrent requests inserting overlapping rows in different
     # orders would otherwise wait on each other's row locks and deadlock.
-    missing = sorted(hashes.keys() - result.keys(), key=hashes.__getitem__)
     transformed = await asyncio.gather(*(pool.transform(source) for source in missing))
     result.update(zip(missing, transformed, strict=True))
 
@@ -70,9 +83,11 @@ async def create_payload(
 ) -> uuid.UUID:
     """Store the payload for the two lists and return its id; identical payloads share one id."""
     interleaved = interleave(list_1, list_2)
+    logger.info("Creating payload from %d string(s)", len(interleaved))
     transformed = await _transform_all(session, interleaved, pool)
     output = OUTPUT_SEPARATOR.join(transformed[source] for source in interleaved)
     fingerprint = sha256_hex(output)
+    logger.debug("Payload fingerprint %s", fingerprint[:8])
 
     await _insert_ignoring_duplicates(
         session,
@@ -81,6 +96,7 @@ async def create_payload(
     )
     # Our row may have lost the race to an identical one, so read the id back.
     payload_id = await session.scalar(select(Payload.id).where(Payload.fingerprint == fingerprint))
+    logger.info("Payload stored with id %s", payload_id)
     assert payload_id is not None  # the row exists: we inserted it or lost the race
     await session.commit()
     return payload_id

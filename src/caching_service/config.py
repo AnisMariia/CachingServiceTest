@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     )
     # Upper bound on simultaneous calls to the transformer across all requests, so a
     # burst of traffic cannot overload the external service it stands in for.
+    log_level: str = "INFO"
     transformer_concurrency: int = Field(default=10, ge=1)
 
 

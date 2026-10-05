@@ -2,7 +2,10 @@
 
 import asyncio
 import contextlib
+import logging
 from collections.abc import Awaitable, Callable
+
+logger = logging.getLogger(__name__)
 
 # Simulated network latency, so that the benefit of the cache is visible.
 LATENCY_SECONDS = 0.05
@@ -32,9 +35,12 @@ class TransformerPool:
     async def transform(self, source: str) -> str:
         task = self._in_flight.get(source)
         if task is None:
+            logger.debug("No in-flight call for %r, starting one", source)
             task = asyncio.create_task(self._call(source))
             self._in_flight[source] = task
             task.add_done_callback(lambda done: self._finish(source, done))
+        else:
+            logger.info("Transformer call for %r already in flight, reusing it", source)
         # The call is owned by its own task, not by the first caller: shielding keeps
         # it alive when that caller is cancelled (e.g. the client disconnects), so
         # the other requests waiting on the same string still get their result.
@@ -42,7 +48,10 @@ class TransformerPool:
 
     async def _call(self, source: str) -> str:
         async with self._semaphore:
-            return await self._transformer(source)
+            logger.info("Calling transformer for %r", source)
+            result = await self._transformer(source)
+            logger.debug("Transformer returned for %r", source)
+            return result
 
     def _finish(self, source: str, task: asyncio.Task[str]) -> None:
         del self._in_flight[source]
