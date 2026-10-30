@@ -2,7 +2,7 @@
 
 import uuid
 
-from sqlalchemy import String, Text
+from sqlalchemy import String, Text, true
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 SHA256_HEX_LENGTH = 64
@@ -35,3 +35,4 @@ class Payload(Base):
     # Unique hash of the output: this is what makes identical payloads share one id.
     fingerprint: Mapped[str] = mapped_column(String(SHA256_HEX_LENGTH), unique=True)
     output: Mapped[str] = mapped_column(Text)
+

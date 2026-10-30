@@ -11,6 +11,8 @@ logger = logging.getLogger(__name__)
 LATENCY_SECONDS = 0.05
 
 Transformer = Callable[[str], Awaitable[str]]
+# Stores a finished result; see TransformerPool.transform.
+Persist = Callable[[str], Awaitable[None]]
 
 
 async def transform(text: str) -> str:
@@ -32,11 +34,18 @@ class TransformerPool:
         self._semaphore = asyncio.Semaphore(max_concurrency)
         self._in_flight: dict[str, asyncio.Task[str]] = {}
 
-    async def transform(self, source: str) -> str:
+    async def transform(self, source: str, persist: Persist | None = None) -> str:
+        """Transform source, sharing the call with any identical one in flight.
+
+        persist, if given, stores the result and runs inside the shared call: the
+        string stays "in flight" until it is stored, so a request arriving in
+        between waits for the call instead of missing the cache and repeating it.
+        Only the persist of the call's first caller is used.
+        """
         task = self._in_flight.get(source)
         if task is None:
             logger.debug("No in-flight call for %r, starting one", source)
-            task = asyncio.create_task(self._call(source))
+            task = asyncio.create_task(self._call(source, persist))
             self._in_flight[source] = task
             task.add_done_callback(lambda done: self._finish(source, done))
         else:
@@ -46,11 +55,13 @@ class TransformerPool:
         # the other requests waiting on the same string still get their result.
         return await asyncio.shield(task)
 
-    async def _call(self, source: str) -> str:
+    async def _call(self, source: str, persist: Persist | None) -> str:
         async with self._semaphore:
             logger.info("Calling transformer for %r", source)
             result = await self._transformer(source)
             logger.debug("Transformer returned for %r", source)
+            if persist is not None:
+                await persist(result)
             return result
 
     def _finish(self, source: str, task: asyncio.Task[str]) -> None:

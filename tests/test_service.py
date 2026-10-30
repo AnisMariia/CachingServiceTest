@@ -71,7 +71,7 @@ async def test_unknown_payload_returns_none(session: AsyncSession) -> None:
     assert await service.get_payload_output(session, uuid.uuid4()) is None
 
 
-async def test_transformer_failure_stores_nothing_and_can_be_retried(
+async def test_transformer_failure_keeps_other_results_and_can_be_retried(
     session: AsyncSession,
 ) -> None:
     transformer = CountingTransformer(fail_on="b")
@@ -82,9 +82,13 @@ async def test_transformer_failure_stores_nothing_and_can_be_retried(
     await session.rollback()
 
     assert await session.scalar(select(func.count()).select_from(Payload)) == 0
-    assert await session.scalar(select(func.count()).select_from(CachedTransformation)) == 0
+    # "a" succeeded, so it is cached and the retry only calls the transformer for "b".
+    assert await session.scalar(select(func.count()).select_from(CachedTransformation)) == 1
     transformer.fail_on = None
+    transformer.calls.clear()
     payload_id = await service.create_payload(session, ["a"], ["b"], pool)
+
+    assert transformer.calls == ["b"]
 
     assert await service.get_payload_output(session, payload_id) == "A, B"
 
@@ -174,3 +178,37 @@ class TestConcurrency:
 
         assert first != second
         assert sorted(transformer.calls) == ["a", "b", "c", "d", "e"]
+
+
+async def test_request_arriving_after_transform_but_before_commit_reuses_the_call(
+    engine: AsyncEngine,
+) -> None:
+    transformer = CountingTransformer(delay=0.05)
+    pool = TransformerPool(transformer, max_concurrency=10)
+
+    async def request(list_2: list[str], start_after: float) -> uuid.UUID:
+        await asyncio.sleep(start_after)
+        async with async_sessionmaker(engine, expire_on_commit=False)() as session:
+            return await service.create_payload(session, ["a"], list_2, pool)
+
+    # The second request does its cache lookup just after the first call has returned.
+    await asyncio.gather(request(["b"], 0), request(["c"], 0.0501))
+
+    assert transformer.calls.count("a") == 1
+
+
+async def test_cancelled_request_still_stores_finished_transformations(
+    session: AsyncSession,
+) -> None:
+    transformer = CountingTransformer(delay=0.3, fail_on="b")
+    pool = TransformerPool(transformer, max_concurrency=10)
+
+    request = asyncio.create_task(service.create_payload(session, ["a", "b"], ["c", "d"], pool))
+    await asyncio.sleep(0.15)  # the transformer calls are running
+    request.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await request
+    await asyncio.sleep(0.6)  # the calls outlive the request and store their results
+    await session.rollback()
+
+    assert await session.scalar(select(func.count()).select_from(CachedTransformation)) == 3

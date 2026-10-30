@@ -68,3 +68,15 @@ async def test_finished_call_is_not_cached_in_pool() -> None:
     await pool.transform("a")
 
     assert transformer.calls == ["a", "a"]
+
+
+async def test_persist_failure_is_raised_and_not_remembered() -> None:
+    pool = TransformerPool(CountingTransformer(), max_concurrency=10)
+
+    async def failing_persist(result: str) -> None:
+        raise RuntimeError("database unavailable")
+
+    with pytest.raises(RuntimeError):
+        await pool.transform("a", failing_persist)
+
+    assert await pool.transform("a") == "A"

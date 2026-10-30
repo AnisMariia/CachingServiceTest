@@ -86,3 +86,20 @@ async def test_different_payloads_get_different_ids(client: httpx.AsyncClient) -
     second = (await client.post("/payload", json={"list_1": ["b"], "list_2": ["a"]})).json()
 
     assert first != second
+
+
+async def test_nul_character_is_422(client: httpx.AsyncClient) -> None:
+    # PostgreSQL text cannot hold NUL; it must be rejected up front, not fail at insert.
+    response = await client.post("/payload", json={"list_1": ["a\u0000b"], "list_2": ["c"]})
+
+    assert response.status_code == 422
+
+
+async def test_lone_surrogate_is_422(client: httpx.AsyncClient) -> None:
+    response = await client.post(
+        "/payload",
+        content='{"list_1": ["\\ud800"], "list_2": ["c"]}',
+        headers={"content-type": "application/json"},
+    )
+
+    assert response.status_code == 422

@@ -4,11 +4,17 @@ import asyncio
 import hashlib
 import logging
 import uuid
+from functools import partial
 from itertools import chain
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import (
+    AsyncConnection,
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+)
 
 from caching_service.models import Base, CachedTransformation, Payload
 from caching_service.transformer import TransformerPool
@@ -37,6 +43,18 @@ async def _insert_ignoring_duplicates(
     await session.execute(insert(model).values(rows).on_conflict_do_nothing())
 
 
+async def _store_transformation(
+    bind: AsyncEngine | AsyncConnection, source_hash: str, source: str, transformed: str
+) -> None:
+    async with async_sessionmaker(bind, expire_on_commit=False)() as session:
+        await _insert_ignoring_duplicates(
+            session,
+            CachedTransformation,
+            [{"source_hash": source_hash, "source": source, "transformed": transformed}],
+        )
+        await session.commit()
+
+
 async def _transform_all(
     session: AsyncSession, sources: list[str], pool: TransformerPool
 ) -> dict[str, str]:
@@ -62,19 +80,23 @@ async def _transform_all(
     for source in result:
         logger.debug("Cache hit for %s, transformer skipped", hashes[source][:8])
 
-    # Sorted by hash: concurrent requests inserting overlapping rows in different
-    # orders would otherwise wait on each other's row locks and deadlock.
-    transformed = await asyncio.gather(*(pool.transform(source) for source in missing))
-    result.update(zip(missing, transformed, strict=True))
-
-    await _insert_ignoring_duplicates(
-        session,
-        CachedTransformation,
-        [
-            {"source_hash": hashes[source], "source": source, "transformed": text}
-            for source, text in zip(missing, transformed, strict=True)
-        ],
+    # Each string is stored by its own transformer call, in a session of its own, as
+    # soon as it is transformed. A request that finds the string in flight therefore
+    # never sees a gap before the row exists, and one failure loses none of the
+    # other strings' results.
+    bind = session.bind
+    outcomes = await asyncio.gather(
+        *(
+            pool.transform(source, partial(_store_transformation, bind, hashes[source], source))
+            for source in missing
+        ),
+        return_exceptions=True,
     )
+    failures = [outcome for outcome in outcomes if isinstance(outcome, BaseException)]
+    if failures:
+        logger.warning("%d of %d transformer call(s) failed", len(failures), len(missing))
+        raise failures[0]
+    result.update(zip(missing, outcomes, strict=True))
     return result
 
 
